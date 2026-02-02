@@ -1,7 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
-const nodemailer = require('nodemailer');
+const axios = require('axios');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -32,29 +32,9 @@ const upload = multer({
   },
 });
 
-/* -------------------- SMTP (BREVO) -------------------- */
-function getTransporter() {
-  return nodemailer.createTransport({
-    host: process.env.MAIL_HOST || 'smtp-relay.brevo.com',
-    port: Number(process.env.MAIL_PORT || 587),
-    secure: false, // 587 -> false
-    auth: {
-      user: process.env.MAIL_USER,
-      pass: process.env.MAIL_PASS,
-    },
-    // Cloud ortamlarında daha stabil olsun
-    connectionTimeout: 20000,
-    greetingTimeout: 20000,
-    socketTimeout: 30000,
-  });
-}
-
-/* -------------------- OPTIONAL ENV DEBUG -------------------- */
+/* -------------------- ENV DEBUG (SAFE) -------------------- */
 console.log('ENV CHECK:', {
-  MAIL_HOST: !!process.env.MAIL_HOST,
-  MAIL_PORT: !!process.env.MAIL_PORT,
-  MAIL_USER: !!process.env.MAIL_USER,
-  MAIL_PASS: !!process.env.MAIL_PASS,
+  BREVO_API_KEY: !!process.env.BREVO_API_KEY,
   MAIL_FROM: !!process.env.MAIL_FROM,
   MAIL_TO: !!process.env.MAIL_TO,
 });
@@ -65,7 +45,7 @@ app.post('/api/kariyer', upload.single('cv'), async (req, res) => {
     const data = req.body;
     const file = req.file;
 
-    // Zorunlu alanlar (minimum)
+    // Minimum zorunlu alanlar
     if (!data?.name || !data?.email || !data?.phone || !data?.position) {
       return res.status(400).json({
         success: false,
@@ -77,16 +57,25 @@ app.post('/api/kariyer', upload.single('cv'), async (req, res) => {
       return res.status(400).json({ success: false, message: 'CV dosyası yok.' });
     }
 
-    // Env zorunluları
-    if (!process.env.MAIL_USER || !process.env.MAIL_PASS) {
+    // Brevo API zorunluları
+    if (!process.env.BREVO_API_KEY) {
       return res.status(500).json({
         success: false,
-        message: 'MAIL_USER / MAIL_PASS tanımlı değil (Railway Variables kontrol et).',
+        message: 'BREVO_API_KEY eksik (Railway Variables kontrol et).',
       });
     }
 
-    const transporter = getTransporter();
+    const fromEmail = process.env.MAIL_FROM;
+    const toEmail = process.env.MAIL_TO || 'info@sefartdigital.com';
 
+    if (!fromEmail) {
+      return res.status(500).json({
+        success: false,
+        message: 'MAIL_FROM eksik (Brevo’da doğrulanmış gönderen gir).',
+      });
+    }
+
+    // Mail metni
     const mailContent = `
 Yeni Kariyer Başvurusu
 
@@ -111,29 +100,50 @@ Cevap 2:
 ${data.dynamicAnswer2 || '-'}
     `.trim();
 
-    const fromEmail = process.env.MAIL_FROM || process.env.MAIL_USER;
-    const toEmail = process.env.MAIL_TO || 'info@sefartdigital.com';
+    // CV’yi base64 ek yapıyoruz
+    const attachmentBase64 = file.buffer.toString('base64');
 
-    await transporter.sendMail({
-      from: `"sefArt Kariyer" <${fromEmail}>`,
-      to: toEmail,
-      subject: `Yeni Kariyer Başvurusu — ${data.name}`,
-      text: mailContent,
-      attachments: [
-        {
-          filename: file.originalname,
-          content: file.buffer,
+    // Brevo API ile mail gönder
+    await axios.post(
+      'https://api.brevo.com/v3/smtp/email',
+      {
+        sender: { name: 'sefArt Kariyer', email: fromEmail },
+        to: [{ email: toEmail }],
+        subject: `Yeni Kariyer Başvurusu — ${data.name}`,
+        textContent: mailContent,
+        attachment: [
+          {
+            name: file.originalname,
+            content: attachmentBase64,
+          },
+        ],
+      },
+      {
+        headers: {
+          'api-key': process.env.BREVO_API_KEY,
+          'content-type': 'application/json',
+          accept: 'application/json',
         },
-      ],
-    });
+        timeout: 30000,
+      }
+    );
 
     return res.json({ success: true });
   } catch (err) {
-    // Multer fileFilter hatası da buraya düşebilir
-    const msg = err?.message ? err.message : 'Mail gönderim hatası';
-    console.error('❌ Mail gönderim hatası:', err);
+    // Brevo API hata mesajını yakala
+    const status = err?.response?.status;
+    const apiMsg =
+      err?.response?.data?.message ||
+      err?.response?.data ||
+      err?.message ||
+      'Mail gönderim hatası';
 
-    return res.status(500).json({ success: false, message: msg });
+    console.error('❌ Brevo mail gönderim hatası:', status, apiMsg);
+
+    return res.status(500).json({
+      success: false,
+      message: typeof apiMsg === 'string' ? apiMsg : JSON.stringify(apiMsg),
+    });
   }
 });
 
