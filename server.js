@@ -18,12 +18,15 @@ const upload = multer({
 /* -------------------- SMTP CONFIG -------------------- */
 const transporter = nodemailer.createTransport({
   host: 'srvc63.trwww.com',
-  port: 465,
-  secure: true,
+  port: 587,
+  secure: false, // 587 için false
   auth: {
-  user: process.env.MAIL_USER,
-  pass: process.env.MAIL_PASS
-}
+    user: process.env.MAIL_USER,
+    pass: process.env.MAIL_PASS
+  },
+  tls: {
+    rejectUnauthorized: false
+  }
 });
 
 /* -------------------- TEST SMTP -------------------- */
