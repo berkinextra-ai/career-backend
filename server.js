@@ -39,20 +39,13 @@ const upload = multer({
 
 /* -------------------- SMTP CONFIG -------------------- */
 const transporter = nodemailer.createTransport({
-  host: 'srvc63.trwww.com',
-  port: 587,
+  host: process.env.MAIL_HOST,
+  port: Number(process.env.MAIL_PORT || 587),
   secure: false, // 587 için false
   auth: {
     user: process.env.MAIL_USER,
-    pass: process.env.MAIL_PASS,
-  },
-  tls: {
-    rejectUnauthorized: false,
-  },
-  // ✅ Cloud ortamlarında bağlantı daha stabil olsun
-  connectionTimeout: 20_000,
-  greetingTimeout: 20_000,
-  socketTimeout: 30_000,
+    pass: process.env.MAIL_PASS
+  }
 });
 
 /* -------------------- TEST SMTP -------------------- */
@@ -116,17 +109,17 @@ ${data.dynamicAnswer2 || '-'}
     `;
 
     await transporter.sendMail({
-      from: `"sefArt Kariyer" <${process.env.MAIL_USER || 'kariyer@sefartdigital.com'}>`,
-      to: 'info@sefartdigital.com',
-      subject: `Yeni Kariyer Başvurusu — ${data.name}`,
-      text: mailContent,
-      attachments: [
-        {
-          filename: file.originalname,
-          content: file.buffer,
-        },
-      ],
-    });
+  from: `"sefArt Kariyer" <${process.env.MAIL_FROM}>`,
+  to: process.env.MAIL_TO,
+  subject: `Yeni Kariyer Başvurusu — ${data.name}`,
+  text: mailContent,
+  attachments: [
+    {
+      filename: file.originalname,
+      content: file.buffer
+    }
+  ]
+});
 
     return res.json({ success: true });
   } catch (err) {
