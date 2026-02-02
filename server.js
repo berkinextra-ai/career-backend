@@ -4,15 +4,37 @@ const multer = require('multer');
 const nodemailer = require('nodemailer');
 
 const app = express();
-const PORT = 3001;
+
+// ✅ Render / cloud ortamlarında portu platform verir
+const PORT = process.env.PORT || 3001;
 
 /* -------------------- MIDDLEWARE -------------------- */
-app.use(cors());
 app.use(express.json());
 
+// ✅ Canlıda daha güvenli istersen origin kısıtla (şimdilik * açık)
+app.use(
+  cors({
+    origin: true, // istersen: ['https://sefartdigital.com', 'https://www.sefartdigital.com']
+    credentials: false,
+  })
+);
+
 /* -------------------- FILE UPLOAD -------------------- */
+// ✅ CV'yi mail eki yapacağımız için memoryStorage en pratik yöntem
 const upload = multer({
+  storage: multer.memoryStorage(),
   limits: { fileSize: 20 * 1024 * 1024 }, // 20MB
+  fileFilter: (req, file, cb) => {
+    const allowed = [
+      'application/pdf',
+      'application/msword',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    ];
+    if (!allowed.includes(file.mimetype)) {
+      return cb(new Error('Sadece PDF/DOC/DOCX kabul edilir.'));
+    }
+    cb(null, true);
+  },
 });
 
 /* -------------------- SMTP CONFIG -------------------- */
@@ -22,11 +44,15 @@ const transporter = nodemailer.createTransport({
   secure: false, // 587 için false
   auth: {
     user: process.env.MAIL_USER,
-    pass: process.env.MAIL_PASS
+    pass: process.env.MAIL_PASS,
   },
   tls: {
-    rejectUnauthorized: false
-  }
+    rejectUnauthorized: false,
+  },
+  // ✅ Cloud ortamlarında bağlantı daha stabil olsun
+  connectionTimeout: 20_000,
+  greetingTimeout: 20_000,
+  socketTimeout: 30_000,
 });
 
 /* -------------------- TEST SMTP -------------------- */
@@ -38,6 +64,12 @@ transporter.verify((error) => {
   }
 });
 
+/* -------------------- HEALTH CHECK (opsiyonel) -------------------- */
+// Render / uptime kontrolü için
+app.get('/', (req, res) => {
+  res.send('Backend çalışıyor 🚀');
+});
+
 /* -------------------- FORM ENDPOINT -------------------- */
 app.post('/api/kariyer', upload.single('cv'), async (req, res) => {
   try {
@@ -45,7 +77,18 @@ app.post('/api/kariyer', upload.single('cv'), async (req, res) => {
     const file = req.file;
 
     if (!file) {
-      return res.status(400).json({ success: false, message: 'CV dosyası yok' });
+      return res.status(400).json({
+        success: false,
+        message: 'CV dosyası yok',
+      });
+    }
+
+    // Basit zorunlu alan kontrolü (istersen genişletiriz)
+    if (!data.name || !data.email || !data.phone || !data.position) {
+      return res.status(400).json({
+        success: false,
+        message: 'Zorunlu alanlar eksik',
+      });
     }
 
     const mailContent = `
@@ -57,42 +100,50 @@ Telefon: ${data.phone}
 Pozisyon: ${data.position}
 
 Son Teknolojiler:
-${data.recentTech}
+${data.recentTech || '-'}
 
 İş Akışı:
-${data.workflow}
+${data.workflow || '-'}
 
 Gurur Duyulan Proje:
-${data.proudProject}
+${data.proudProject || '-'}
 
 Cevap 1:
-${data.dynamicAnswer1}
+${data.dynamicAnswer1 || '-'}
 
 Cevap 2:
-${data.dynamicAnswer2}
+${data.dynamicAnswer2 || '-'}
     `;
 
     await transporter.sendMail({
-      from: `"sefArt Kariyer" <kariyer@sefartdigital.com>`,
+      from: `"sefArt Kariyer" <${process.env.MAIL_USER || 'kariyer@sefartdigital.com'}>`,
       to: 'info@sefartdigital.com',
       subject: `Yeni Kariyer Başvurusu — ${data.name}`,
       text: mailContent,
       attachments: [
         {
           filename: file.originalname,
-          content: file.buffer
-        }
-      ]
+          content: file.buffer,
+        },
+      ],
     });
 
-    res.json({ success: true });
+    return res.json({ success: true });
   } catch (err) {
+    // multer fileFilter error vs.
+    const message =
+      err && err.message ? err.message : 'Mail gönderim hatası';
+
     console.error('❌ Mail gönderim hatası:', err);
-    res.status(500).json({ success: false });
+
+    return res.status(500).json({
+      success: false,
+      message,
+    });
   }
 });
 
 /* -------------------- SERVER START -------------------- */
 app.listen(PORT, () => {
-  console.log(`🚀 Backend çalışıyor: http://localhost:${PORT}`);
+  console.log(`🚀 Backend çalışıyor. Port: ${PORT}`);
 });
