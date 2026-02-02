@@ -4,20 +4,52 @@ const multer = require('multer');
 const nodemailer = require('nodemailer');
 
 const app = express();
-
-// ✅ Railway/Cloud portu buradan verir
 const PORT = process.env.PORT || 3001;
 
+/* -------------------- MIDDLEWARE -------------------- */
 app.use(cors());
 app.use(express.json());
 
-// ✅ CV'yi bellekten ek olarak göndereceğiz
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 20 * 1024 * 1024 },
+/* -------------------- HEALTH CHECK -------------------- */
+app.get('/', (req, res) => {
+  res.status(200).send('OK');
 });
 
-// ✅ ENV kontrol (log için)
+/* -------------------- FILE UPLOAD -------------------- */
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 20 * 1024 * 1024 }, // 20MB
+  fileFilter: (req, file, cb) => {
+    const allowed = [
+      'application/pdf',
+      'application/msword',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    ];
+    if (!allowed.includes(file.mimetype)) {
+      return cb(new Error('Sadece PDF/DOC/DOCX kabul edilir.'));
+    }
+    cb(null, true);
+  },
+});
+
+/* -------------------- SMTP (BREVO) -------------------- */
+function getTransporter() {
+  return nodemailer.createTransport({
+    host: process.env.MAIL_HOST || 'smtp-relay.brevo.com',
+    port: Number(process.env.MAIL_PORT || 587),
+    secure: false, // 587 -> false
+    auth: {
+      user: process.env.MAIL_USER,
+      pass: process.env.MAIL_PASS,
+    },
+    // Cloud ortamlarında daha stabil olsun
+    connectionTimeout: 20000,
+    greetingTimeout: 20000,
+    socketTimeout: 30000,
+  });
+}
+
+/* -------------------- OPTIONAL ENV DEBUG -------------------- */
 console.log('ENV CHECK:', {
   MAIL_HOST: !!process.env.MAIL_HOST,
   MAIL_PORT: !!process.env.MAIL_PORT,
@@ -27,39 +59,33 @@ console.log('ENV CHECK:', {
   MAIL_TO: !!process.env.MAIL_TO,
 });
 
-// ✅ Brevo SMTP
-const transporter = nodemailer.createTransport({
-  host: process.env.MAIL_HOST || 'smtp-relay.brevo.com',
-  port: Number(process.env.MAIL_PORT || 587),
-  secure: false,
-  auth: {
-    user: process.env.MAIL_USER,
-    pass: process.env.MAIL_PASS,
-  },
-});
-
-// ✅ SMTP test (uygulamayı düşürmez)
-transporter.verify((error) => {
-  if (error) {
-    console.error('❌ SMTP bağlantı hatası:', error.message || error);
-  } else {
-    console.log('✅ SMTP hazır');
-  }
-});
-
-// ✅ Health check
-app.get('/', (req, res) => {
-  res.status(200).send('OK');
-});
-
+/* -------------------- FORM ENDPOINT -------------------- */
 app.post('/api/kariyer', upload.single('cv'), async (req, res) => {
   try {
     const data = req.body;
     const file = req.file;
 
-    if (!file) {
-      return res.status(400).json({ success: false, message: 'CV dosyası yok' });
+    // Zorunlu alanlar (minimum)
+    if (!data?.name || !data?.email || !data?.phone || !data?.position) {
+      return res.status(400).json({
+        success: false,
+        message: 'Zorunlu alanlar eksik (name/email/phone/position).',
+      });
     }
+
+    if (!file) {
+      return res.status(400).json({ success: false, message: 'CV dosyası yok.' });
+    }
+
+    // Env zorunluları
+    if (!process.env.MAIL_USER || !process.env.MAIL_PASS) {
+      return res.status(500).json({
+        success: false,
+        message: 'MAIL_USER / MAIL_PASS tanımlı değil (Railway Variables kontrol et).',
+      });
+    }
+
+    const transporter = getTransporter();
 
     const mailContent = `
 Yeni Kariyer Başvurusu
@@ -83,11 +109,14 @@ ${data.dynamicAnswer1 || '-'}
 
 Cevap 2:
 ${data.dynamicAnswer2 || '-'}
-    `;
+    `.trim();
+
+    const fromEmail = process.env.MAIL_FROM || process.env.MAIL_USER;
+    const toEmail = process.env.MAIL_TO || 'info@sefartdigital.com';
 
     await transporter.sendMail({
-      from: `"sefArt Kariyer" <${process.env.MAIL_FROM || process.env.MAIL_USER}>`,
-      to: process.env.MAIL_TO || 'info@sefartdigital.com',
+      from: `"sefArt Kariyer" <${fromEmail}>`,
+      to: toEmail,
       subject: `Yeni Kariyer Başvurusu — ${data.name}`,
       text: mailContent,
       attachments: [
@@ -100,11 +129,15 @@ ${data.dynamicAnswer2 || '-'}
 
     return res.json({ success: true });
   } catch (err) {
+    // Multer fileFilter hatası da buraya düşebilir
+    const msg = err?.message ? err.message : 'Mail gönderim hatası';
     console.error('❌ Mail gönderim hatası:', err);
-    return res.status(500).json({ success: false, message: err.message || 'Mail gönderilemedi' });
+
+    return res.status(500).json({ success: false, message: msg });
   }
 });
 
+/* -------------------- SERVER START -------------------- */
 app.listen(PORT, () => {
   console.log(`🚀 Backend çalışıyor. Port: ${PORT}`);
 });
